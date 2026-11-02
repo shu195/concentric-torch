@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Curvilinear CPU Sandbox</title>
+<style>
+:root{--bg:#0d1117;--p:#161b22;--b:#30363d;--t:#c9d1d9;--a:#58a6ff;--g:#3fb950;--r:#f85149}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t);font:13px/1.4 Consolas,monospace}
+header{padding:10px 16px;border-bottom:1px solid var(--b)}header b{color:var(--a)}header span{color:#8b949e}
+main{display:grid;grid-template-columns:minmax(300px,1fr) 380px;gap:10px;padding:10px}
+.p{background:var(--p);border:1px solid var(--b);border-radius:6px;padding:8px;margin-bottom:10px}
+.p h3{margin:0 0 6px;font-size:12px;color:#8b949e;text-transform:uppercase;letter-spacing:.05em}
+textarea{width:100%;height:300px;background:#010409;color:var(--t);border:1px solid var(--b);border-radius:4px;padding:6px;font:inherit;resize:vertical}
+button,select{background:#21262d;color:var(--t);border:1px solid var(--b);border-radius:4px;padding:4px 10px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--a)}label{margin-left:8px}
+#err{color:var(--r);min-height:1.4em}
+.reg{display:inline-block;width:23%;text-align:center;border:1px solid var(--b);border-radius:4px;padding:4px;margin-right:1%}
+.reg i{display:block;color:#8b949e;font-style:normal;font-size:11px}.reg b{font-size:18px;color:var(--g)}
+#disp{display:grid;grid-template-columns:repeat(8,1fr);gap:2px;width:256px;margin:auto}
+#disp div{aspect-ratio:1;background:#010409;border-radius:2px}
+#bits{display:flex;gap:3px}#bits div{flex:1;text-align:center;font-size:10px}
+#bits .bar{height:50px;background:#010409;position:relative;border-radius:2px}
+#bits .fill{position:absolute;bottom:0;left:0;right:0;border-radius:2px}
+#ram{display:grid;grid-template-columns:repeat(16,1fr);gap:1px;font-size:10px}
+#ram span{text-align:center;color:#484f58}#ram span.nz{color:var(--g)}
+.dim{color:#8b949e}
+</style></head><body>
+<header><b>Curvilinear CPU Sandbox</b> <span>- every ALU bit is a dot product of a 66-number array; every opcode is decoded by a 23x8 array. No boolean gates in the datapath.</span></header>
+<main>
+<div>
+ <div class="p"><h3>Program</h3>
+  <select id="prog"></select>
+  <button id="asm">Assemble</button><button id="step">Step</button><button id="run">Run / Pause</button><button id="rst">Reset</button>
+  <label>speed <input type="range" id="spd" min="1" max="60" value="8"></label>
+  <label>weight decimals <input type="range" id="dec" min="0" max="4" value="2"><b id="decv">2</b></label>
+  <textarea id="src" spellcheck="false"></textarea><div id="err"></div>
+  <div class="dim">8-bit, 4 regs R0-R3, 256B RAM. Ops: LOAD_IMM LOAD STORE ADD SUB AND OR XOR SLT SHL SHR BEQ BNE JUMP HALT NOP. Display = RAM 0xC0-0xFF.</div>
+ </div>
+ <div class="p"><h3>Neural ALU: raw analog output per bit (threshold 0.5)</h3><div id="bits"></div>
+  <div class="dim" id="ctrl"></div></div>
+</div>
+<div>
+ <div class="p"><h3>CPU state</h3><div id="regs"></div><div class="dim" style="margin-top:6px" id="st"></div></div>
+ <div class="p"><h3>8x8 display (memory-mapped)</h3><div id="disp"></div></div>
+ <div class="p"><h3>RAM</h3><div id="ram"></div></div>
+</div>
+</main>
+<script>
+/*__CPU__*/
+</script>
+<script>
+const $=id=>document.getElementById(id);
+function bitmapAsm(frames){ // frames: arrays of 8 strings; emits only changed pixels, loops forever
+  let out="  LOAD_IMM R0, 255\n  LOAD_IMM R1, 0\nFRAME0:\n", prev=Array(64).fill(0);
+  frames.forEach((fr,k)=>{ if(k>0) out+="FRAME"+k+":\n";
+    fr.join("").split("").forEach((c,i)=>{const v=c==="X"?1:0; if(v!==prev[i]||k===0&&v) {out+="  STORE "+(v?"R0":"R1")+", "+(0xC0+i)+"\n";} prev[i]=v;});
+  });
+  return out+"  JUMP FRAME0\n";
+}
+const BIG=[".XX..XX.","XXXXXXXX","XXXXXXXX","XXXXXXXX",".XXXXXX.","..XXXX..","...XX...","........"];
+const SMALL=["........",".XX..XX.",".XXXXXX.",".XXXXXX.","..XXXX..","...XX...","........","........"];
+const PROGRAMS={
+"Multiply 6 x 7 (loop)":`  LOAD_IMM R0, 0
+  LOAD_IMM R1, 6
+  LOAD_IMM R2, 7
+  LOAD_IMM R3, 1
+LOOP:
+  ADD R0, R1
+  SUB R2, R3
+  BNE R2, R3, LOOP
+  ADD R0, R1      ; last pass (loop exits when R2 == 1)
+  STORE R0, 16
+  HALT`,
+"Factorial 4! (nested loops + RAM)":`  LOAD_IMM R0, 1
+  LOAD_IMM R1, 4
+  LOAD_IMM R3, 1
+OUTER:
+  STORE R0, 16
+  LOAD R2, 16
+  STORE R1, 17
+INNER:
+  LOAD R0, 16
+  ADD R2, R0
+  LOAD R0, 17
+  SUB R0, R3
+  STORE R0, 17
+  BNE R0, R3, INNER
+  STORE R2, 16
+  LOAD R0, 16
+  SUB R1, R3
+  BNE R1, R3, OUTER
+  STORE R0, 128
+  HALT`,
+"Fibonacci to RAM[32..]":`  LOAD_IMM R0, 0      ; a
+  LOAD_IMM R1, 1      ; b
+  LOAD_IMM R3, 1
+  STORE R0, 32
+  STORE R1, 33
+  ; each block: c=a+b ; a=b ; b=c ; store c
+  LOAD_IMM R2, 0
+  ADD R2, R0
+  ADD R2, R1
+  SUB R0, R0
+  ADD R0, R1
+  SUB R1, R1
+  ADD R1, R2
+  STORE R2, 34
+  LOAD_IMM R2, 0
+  ADD R2, R0
+  ADD R2, R1
+  SUB R0, R0
+  ADD R0, R1
+  SUB R1, R1
+  ADD R1, R2
+  STORE R2, 35
+  LOAD_IMM R2, 0
+  ADD R2, R0
+  ADD R2, R1
+  SUB R0, R0
+  ADD R0, R1
+  SUB R1, R1
+  ADD R1, R2
+  STORE R2, 36
+  LOAD_IMM R2, 0
+  ADD R2, R0
+  ADD R2, R1
+  STORE R2, 37
+  HALT`,
+"Beating heart (animated)":bitmapAsm([BIG,SMALL]).replace("FRAME0:\n","FRAME0:\n").replace(/JUMP FRAME0/,"JUMP FRAME0"),
+"Bit tricks: AND / OR / XOR / SHL":`  LOAD_IMM R0, 170   ; 10101010
+  LOAD_IMM R1, 204   ; 11001100
+  LOAD_IMM R2, 0
+  ADD R2, R0
+  AND R2, R1
+  STORE R2, 16       ; 136
+  LOAD_IMM R2, 0
+  ADD R2, R0
+  OR R2, R1
+  STORE R2, 17       ; 238
+  LOAD_IMM R2, 0
+  ADD R2, R0
+  XOR R2, R1
+  STORE R2, 18       ; 102
+  SHL R0
+  STORE R0, 19       ; 84
+  HALT`
+};
+// frame loop must alternate: rewrite heart so frames are separated by a delay-free jump chain
+PROGRAMS["Beating heart (animated)"]=(()=>{let s=bitmapAsm([BIG,SMALL]);return s;})();
+
+const cpu=new NeuralCPU(2);let timer=null,assembled=false;
+const sel=$("prog");Object.keys(PROGRAMS).forEach(k=>sel.add(new Option(k,k)));
+function setErr(m){$("err").textContent=m||""}
+function build(){setErr();try{const a=assemble($("src").value);cpu.load(a.rom,a.lineMap);assembled=true;render();return true}catch(e){setErr(e.message);assembled=false;return false}}
+function render(){
+  $("regs").innerHTML=cpu.reg.map((v,i)=>`<div class="reg"><i>R${i}</i><b>${v}</b></div>`).join("");
+  const f=cpu.flags;$("st").textContent=`PC=${cpu.pc}  cycles=${cpu.cycles}  Z=${f.Z} C=${f.C} N=${f.N} V=${f.V}  ${cpu.halted?"HALTED":""}`;
+  const d=$("disp");if(!d.children.length)for(let i=0;i<64;i++)d.appendChild(document.createElement("div"));
+  for(let i=0;i<64;i++){const v=cpu.ram[0xC0+i];d.children[i].style.background=v?`rgb(${88*v/255|0},${166*v/255|0},255)`:"#010409"}
+  const r=$("ram");if(!r.children.length)for(let i=0;i<256;i++)r.appendChild(document.createElement("span"));
+  for(let i=0;i<256;i++){r.children[i].textContent=cpu.ram[i].toString(16).padStart(2,"0");r.children[i].className=cpu.ram[i]?"nz":""}
+  const b=$("bits");if(!b.children.length)for(let i=7;i>=0;i--)b.insertAdjacentHTML("beforeend",`<div><div class="bar"><div class="fill"></div></div>b${i}<br><span class="v">-</span></div>`);
+  for(let k=0;k<8;k++){const e=cpu.energies.length?cpu.energies[7-k]:0,c=b.children[k];
+    const h=Math.max(0,Math.min(1,(e+0.5)/2));c.querySelector(".fill").style.height=h*100+"%";
+    c.querySelector(".fill").style.background=e>=0.5?"#3fb950":"#484f58";c.querySelector(".v").textContent=cpu.energies.length?e.toFixed(2):"-"}
+  $("ctrl").textContent=cpu.lastCtrl?"decoder control lines: "+CTRL.map((n,i)=>n+"="+cpu.lastCtrl[i]).join(" "):"";
+}
+function tick(){const n=+$("spd").value;for(let i=0;i<n&&!cpu.halted;i++)cpu.step();render();if(cpu.halted)stop()}
+function stop(){clearInterval(timer);timer=null}
+sel.onchange=()=>{stop();$("src").value=PROGRAMS[sel.value];build()};
+$("asm").onclick=()=>{stop();build()};
+$("rst").onclick=()=>{stop();build()};
+$("step").onclick=()=>{if(!assembled&&!build())return;cpu.step();render()};
+$("run").onclick=()=>{if(timer){stop();return}if(!assembled||cpu.halted){if(!build())return}timer=setInterval(tick,50)};
+$("dec").oninput=e=>{const v=+e.target.value;$("decv").textContent=v;cpu.setDecimals(v)};
+$("src").oninput=()=>{assembled=false};
+sel.onchange();
+</script></body></html>
